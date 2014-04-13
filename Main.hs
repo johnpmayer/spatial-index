@@ -12,19 +12,6 @@ import System.Random
 
 import RTree
 
-data PointI = P Int deriving Show
-
-instance Spatial PointI where
-  data Interval PointI = I (Int,Int) deriving Show
-  type IntervalUnit PointI = Int
-  emptyInterval = I (0,-1)
-  cover p1@(I (a,b)) p2@(I (c,d))
-    | b < a     = p2
-    | d < c     = p1
-    | otherwise = I (min a c, max b d)
-  size (I (x,y)) = y - x
-  bounds (P x) = I (x,x)
-
 data Ship = Saucer 
   { posx :: Int
   , posy :: Int
@@ -40,6 +27,10 @@ instance Spatial Ship where
     let i1 = (min xa1 xb1, max ya1 yb1)
         i2 = (min xa2 xb2, max ya2 yb2)
     in SI (Just (i1,i2))
+  intersect (SI Nothing) _ = False
+  intersect _ (SI Nothing) = False
+  intersect (SI (Just ((xa1, ya1), (xa2, ya2)))) (SI (Just ((xb1, yb1), (xb2, yb2)))) = 
+    not ((xa2 < xb1) || (xb2 < xa1) || (ya2 < yb1) || (yb2 < ya1))
   size (SI Nothing) = -1
   size (SI (Just ((x1,y1),(x2,y2)))) = (x2 - x1) * (y2 - y1)
   bounds ship = SI . Just $ ((posx ship - r ship

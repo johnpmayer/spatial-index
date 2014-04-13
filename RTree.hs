@@ -5,13 +5,28 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
 
-module RTree where
+module RTree (Container(..), Spatial(..), RTreeConfig, defaultConfig, RTree, empty, readTree, printTree, search, insert) where
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity
 import qualified Data.List as L
 import Data.Vector (Vector)
 import qualified Data.Vector as V
+
+class (Functor (CMonad c), Monad (CMonad c)) => Container c where
+  type CMonad c :: * -> *
+  newC :: a -> (CMonad c) (c a)
+  readC :: (c a) -> (CMonad c) a
+  writeC :: (c a) -> a -> (CMonad c) ()
+
+class (Ord (IntervalUnit a), Num (IntervalUnit a)) => Spatial a where
+  data Interval a :: *
+  type IntervalUnit a :: *
+  emptyInterval :: Interval a
+  cover :: Interval a -> Interval a -> Interval a
+  intersect :: Interval a -> Interval a -> Bool
+  size :: Interval a -> IntervalUnit a
+  bounds :: a -> Interval a
 
 data RTreeConfig = RTreeConfig
   { maxElems :: Int
@@ -26,26 +41,12 @@ data RTree c a = RTree
   , root :: c (Interval a, RNode c a)
   }
 
-class (Ord (IntervalUnit a), Num (IntervalUnit a)) => Spatial a where
-  data Interval a :: *
-  type IntervalUnit a :: *
-  emptyInterval :: Interval a
-  cover :: Interval a -> Interval a -> Interval a
-  size :: Interval a -> IntervalUnit a
-  bounds :: a -> Interval a
-
 type VBounded a b = Vector (Interval a, b)
 type CVBounded m a b = m (VBounded a b)
 
 data RNode c a 
   = RInternal (CVBounded c a (RNode c a))
   | RLeaf (CVBounded c a a)
-
-class (Functor (CMonad c), Monad (CMonad c)) => Container c where
-  type CMonad c :: * -> *
-  newC :: a -> (CMonad c) (c a)
-  readC :: (c a) -> (CMonad c) a
-  writeC :: (c a) -> a -> (CMonad c) ()
 
 readTree :: (Container c) => RTree c a -> (CMonad c) (RTree Identity a)
 readTree tree = 
@@ -92,6 +93,20 @@ data RInsert c a = RInsert (Interval a) | RSplit (Interval a, RNode c a) (Interv
 
 nodeRegion :: Spatial a => VBounded a b -> Interval a
 nodeRegion v = V.foldr (cover . fst) emptyInterval v
+
+searchNode :: (Spatial a, Container c) => Interval a -> RNode c a -> (CMonad c) (VBounded a a)
+searchNode query node = case node of
+  RLeaf cChilds -> do
+    childs <- readC cChilds
+    return $ V.filter (intersect query . fst) childs
+  RInternal cChilds -> do
+    childs <- readC cChilds
+    let matches = V.filter (intersect query . fst) childs
+    results <- V.mapM (searchNode query . snd) matches
+    return $ V.foldr (V.++) V.empty results
+
+search :: (Spatial a, Container c) => RTree c a -> Interval a -> (CMonad c) (VBounded a a)
+search tree q = (snd <$> readC (root tree)) >>= searchNode q
 
 split :: (Spatial a) => RTreeConfig -> VBounded a b -> (VBounded a b, VBounded a b)
 split cfg v = 
