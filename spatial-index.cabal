@@ -19,6 +19,7 @@ executable spatial-index
   main-is:              Main.hs
   other-extensions:     ScopedTypeVariables, TypeFamilies, FlexibleContexts, TupleSections
   build-depends:        base >=4.7 && <4.8, 
+                        containers,
                         mtl >=2.1 && <2.2, 
                         stm >=2.4 && <2.5, 
                         random >=1.0 && <1.1,

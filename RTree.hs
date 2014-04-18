@@ -19,14 +19,15 @@ class (Functor (CMonad c), Monad (CMonad c)) => Container c where
   readC :: (c a) -> (CMonad c) a
   writeC :: (c a) -> a -> (CMonad c) ()
 
-class (Ord (IntervalUnit a), Num (IntervalUnit a)) => Spatial a where
+class (Ord (IntervalUnit a), Num (IntervalUnit a), Monad (SMonad a)) => Spatial a where
   data Interval a :: *
   type IntervalUnit a :: *
+  type SMonad a :: * -> *
   emptyInterval :: Interval a
   cover :: Interval a -> Interval a -> Interval a
   intersect :: Interval a -> Interval a -> Bool
   size :: Interval a -> IntervalUnit a
-  bounds :: a -> Interval a
+  bounds :: a -> SMonad a (Interval a)
 
 data RTreeConfig = RTreeConfig
   { maxElems :: Int
@@ -75,6 +76,7 @@ printTree tree =
 
         RLeaf (Identity childs) -> do
           putStrLn $ unwords [pad, "Leaf", show region, show childs]
+          V.forM_ childs $ \child -> putStrLn $ unwords [padStep ++ pad, show child]
 
         RInternal (Identity childs) -> do
           putStrLn $ unwords $ [pad, "Internal", show region] ++ (map (const "Child") $ V.toList childs)
@@ -134,12 +136,13 @@ split cfg v =
         in (V.cons vWorst1 vGroup1A, V.cons vWorst2 (vGroup1B V.++ vGroup2))
     else (V.cons vWorst1 vGroup1, V.cons vWorst2 vGroup2)
 
-insertNode :: (Container c, Spatial a) => RTreeConfig -> RNode c a -> a -> (CMonad c) (RInsert c a)
+insertNode :: (m ~ CMonad c, m ~ SMonad a, Container c, Spatial a) => RTreeConfig -> RNode c a -> a -> m (RInsert c a)
 insertNode cfg node x = case node of
 
   RLeaf tChilds -> do
     childs <- readC tChilds
-    let newChilds = V.cons (bounds x, x) childs
+    b <- bounds x
+    let newChilds = V.cons (b, x) childs
     if V.length newChilds <= maxElems cfg
     then do
       writeC tChilds newChilds
@@ -153,7 +156,8 @@ insertNode cfg node x = case node of
 
   RInternal tChilds -> do
     childs <- readC tChilds
-    let predictSizeDelta i = size (cover i (bounds x)) - size i
+    b <- bounds x
+    let predictSizeDelta i = size (cover i b) - size i
     let bestChildIndex = V.minIndex . fmap (predictSizeDelta . fst) $ childs
     (_,bestChild) <- V.indexM childs bestChildIndex
     insertResult <- insertNode cfg bestChild x
@@ -177,7 +181,7 @@ insertNode cfg node x = case node of
             split2 <- RInternal <$> newC group2
             return $ RSplit (nodeRegion group1, split1) (nodeRegion group2, split2)
           
-insert :: (Container c, Spatial a) => RTree c a -> a -> (CMonad c) ()
+insert :: (CMonad c ~ m, SMonad a ~ m, Container c, Spatial a) => RTree c a -> a -> m ()
 insert tree x = do
     (_,rootNode) <- readC (root tree)
     insertResult <- insertNode (config tree) rootNode x
@@ -189,5 +193,4 @@ insert tree x = do
         in do
           newRootNode <- RInternal <$> newC childs
           writeC (root tree) (newRootInterval, newRootNode)
-
 
