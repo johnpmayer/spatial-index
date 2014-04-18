@@ -5,7 +5,19 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
 
-module RTree (Container(..), Spatial(..), RTreeConfig, defaultConfig, RTree, empty, leafList, readTree, printTree, search, insert) where
+module RTree 
+  ( Container(..)
+  , Spatial(..)
+  , RTreeConfig
+  , defaultConfig
+  , RTree
+  , empty
+  , leafList
+  , readTree
+  , printTree
+  , search
+  , collisions
+  , insert) where
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity
