@@ -266,7 +266,11 @@ insert tree x = do
               newRootNode <- RInternal <$> newC childs
               writeC (root tree) (newRootInterval, AnyNode newRootNode)
 
-data RDelete c a h = RNotFound | RDelete (Interval a) | RLeafUnderflow (VBounded a a) | RInternalUnderflow (VBounded a (RNode c a h))
+data RDelete c a h where 
+  RNotFound :: RDelete c a h
+  RDelete :: (Interval a) -> RDelete c a h
+  RLeafUnderflow :: (VBounded a a) -> RDelete c a Z
+  RInternalUnderflow :: (VBounded a (RNode c a h)) -> RDelete c a (S h)
 
 deleteNode :: (CMonad c ~ m, SMonad a ~ m, Container c, Spatial a, Eq a) => RTreeConfig -> RNode c a h -> Bounded a a -> m (RDelete c a h)
 deleteNode config node (b,x) = case node of
