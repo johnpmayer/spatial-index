@@ -5,7 +5,19 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
 
-module RTree (Container(..), Spatial(..), RTreeConfig, defaultConfig, RTree, empty, leafList, readTree, printTree, search, insert) where
+module RTree 
+  ( Container(..)
+  , Spatial(..)
+  , RTreeConfig
+  , defaultConfig
+  , RTree
+  , empty
+  , leafList
+  , readTree
+  , printTree
+  , search
+  , collisions
+  , insert) where
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity
@@ -144,12 +156,28 @@ searchNode query node = case node of
 
 search :: (Spatial a, Container c) => RTree c a -> Interval a -> (CMonad c) (VBounded a a)
 search tree q = do
-  anyNode <- (snd <$> readC (root tree))
+  anyNode <- snd <$> readC (root tree)
   case anyNode of
     AnyNode node -> searchNode q node
 
-collisions :: RTree c a -> (CMonad c) [(Bounded a a, Bounded a a)]
-collisions = undefined
+pairwise :: (Container c) => 
+  (Interval a ->  Interval a -> Bool) -> (a -> a -> b) -> [b] ->
+  RNode c a h -> RNode c a h -> (CMonad c) [b]
+pairwise test comb acc node1 node2 = case (node1, node2) of
+  (RLeaf cLeaves1, RLeaf cLeaves2) -> do
+    leaves1 <- readC cLeaves1
+    leaves2 <- readC cLeaves2
+    V.foldM (\acc1 (i1,leaf1) -> V.foldM (\acc2 (i2,leaf2) -> return $ if test i1 i2 then comb leaf1 leaf2 : acc2 else acc2) acc1 leaves2) acc leaves1
+  (RInternal cChilds1, RInternal cChilds2) -> do
+    childs1 <- readC cChilds1
+    childs2 <- readC cChilds2
+    V.foldM (\acc1 (i1,child1) -> V.foldM (\acc2 (i2,child2) -> if test i1 i2 then pairwise test comb acc2 child1 child2 else return acc2) acc1 childs2) acc childs1
+
+collisions :: (Spatial a, Container c) => RTree c a -> (CMonad c) [(a,a)]
+collisions tree = do
+  anyNode <- snd <$> readC (root tree)
+  case anyNode of
+    AnyNode node -> pairwise intersect (,) [] node node
 
 split :: (Spatial a) => RTreeConfig -> VBounded a b -> (VBounded a b, VBounded a b)
 split cfg v = 

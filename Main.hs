@@ -26,6 +26,9 @@ data ShipHandle = ShipHandle
   , sid :: Int
   }
 
+instance Eq ShipHandle where
+  h1 == h2 = sid h1 == sid h2
+
 instance Show ShipHandle where
   show handle = unwords ["ShipHandle", show (sid handle)]
 
@@ -62,9 +65,9 @@ instance Spatial ShipHandle where
     return $ case mship of
       Nothing -> SI Nothing
       Just ship -> SI . Just $ ((posx ship - r ship
-                                         ,posx ship + r ship)
-                                        ,(posy ship - r ship
-                                         ,posy ship + r ship))
+                                ,posy ship - r ship)
+                               ,(posx ship + r ship
+                                ,posy ship + r ship))
 
 instance Container TVar where
   type CMonad TVar = STM
@@ -89,14 +92,20 @@ shipsTest = do
   putStrLn "Go"
   shipStore <- atomically $ newTVar M.empty
   tree :: RTree TVar ShipHandle <- atomically $ empty defaultConfig
+  -- how many to insert
   (n :: Int) <- readLn
+  -- insert n
   forM_ [1..n] (\sid -> do
     seed <- readLn
     putStrLn . unwords $ [ "Inserting", show sid, show seed, "into tree" ]
     atomically $ do
       handle <- genShip shipStore sid seed
       insert tree handle)
+  -- pretty print tree
   atomically (readTree tree) >>= printTree
+  -- calculate and print collisions
+  pairs <- atomically (collisions tree)
+  putStrLn . show . filter (\(x,y) -> not (x == y)) $ pairs
 
 main :: IO ()
 main = shipsTest
