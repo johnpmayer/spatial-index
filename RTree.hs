@@ -5,13 +5,14 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
 
-module RTree (Container(..), Spatial(..), RTreeConfig, defaultConfig, RTree, empty, readTree, printTree, search, insert) where
+module RTree (Container(..), Spatial(..), RTreeConfig, defaultConfig, RTree, empty, leafList, readTree, printTree, search, insert) where
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity
 import qualified Data.List as L
 import Data.Vector (Vector)
 import qualified Data.Vector as V
+import Prelude hiding (Bounded)
 
 class (Functor (CMonad c), Monad (CMonad c)) => Container c where
   type CMonad c :: * -> *
@@ -42,24 +43,52 @@ data RTree c a = RTree
   , root :: c (Interval a, RNode c a)
   }
 
-type VBounded a b = Vector (Interval a, b)
-type CVBounded m a b = m (VBounded a b)
+type Bounded a b = (Interval a, b)
+type VBounded a b = Vector (Bounded a b)
+type CVBounded c a b = c (VBounded a b)
 
 data RNode c a 
   = RInternal (CVBounded c a (RNode c a))
   | RLeaf (CVBounded c a a)
 
+{-
+-- Collapse from the bottom
+foldNode :: (Container c) => (b -> VBounded a b -> (CMonad c) b) -> (b -> VBounded a a -> (CMonad c) b) -> b -> RNode c a -> (CMonad c) b
+foldNode foldInternal foldLeaf initial node = case node of
+  RInternal cChilds -> do
+    childs <- readC cChilds
+    bChilds <- V.mapM (\(i,x) -> (i,) <$> foldNode foldInternal foldLeaf initial x) childs
+    foldInternal initial bChilds
+  RLeaf cLeaves -> do
+    childs <- readC cLeaves 
+    foldLeaf initial childs
+    -}
+
+-- DFS Walk 
+walkNode :: (Container c) => (b -> Bounded a a -> (CMonad c) b) -> b -> RNode c a -> (CMonad c) b
+walkNode walkLeaf initial node = case node of
+  RInternal cChilds -> do
+    childs <- readC cChilds
+    V.foldM (\y -> \(_i,x) -> walkNode walkLeaf y x) initial childs
+  RLeaf cLeaves -> do
+    leaves <- readC cLeaves
+    V.foldM walkLeaf initial leaves
+
+leafList :: (Container c) => RTree c a -> (CMonad c) [Bounded a a]
+leafList tree = snd <$> readC (root tree) >>= walkNode accum []
+  where
+    accum acc (i,a) = return $ (i,a) : acc
+
 readTree :: (Container c) => RTree c a -> (CMonad c) (RTree Identity a)
 readTree tree = 
   let readNode :: (Container c) => RNode c a -> (CMonad c) (RNode Identity a)
       readNode node = case node of
-        RLeaf cChilds -> do
-          childs <- readC cChilds
+        RLeaf cLeaves -> do
+          childs <- readC cLeaves
           return $ RLeaf $ Identity childs
         RInternal cChilds -> do
-          childs <- readC cChilds
-          childs' <- V.mapM (\(i,n) -> (i,) <$> readNode n) childs
-          return $ RInternal $ Identity childs'
+          leaves <- readC cChilds
+          RInternal . Identity <$> V.mapM (\(i,n) -> (i,) <$> readNode n) leaves
   in do
     (i,rootNode) <- readC (root tree)
     rootNode' <- readNode rootNode
@@ -98,8 +127,8 @@ nodeRegion v = V.foldr (cover . fst) emptyInterval v
 
 searchNode :: (Spatial a, Container c) => Interval a -> RNode c a -> (CMonad c) (VBounded a a)
 searchNode query node = case node of
-  RLeaf cChilds -> do
-    childs <- readC cChilds
+  RLeaf cLeaves -> do
+    childs <- readC cLeaves
     return $ V.filter (intersect query . fst) childs
   RInternal cChilds -> do
     childs <- readC cChilds
@@ -109,6 +138,9 @@ searchNode query node = case node of
 
 search :: (Spatial a, Container c) => RTree c a -> Interval a -> (CMonad c) (VBounded a a)
 search tree q = (snd <$> readC (root tree)) >>= searchNode q
+
+collisions :: RTree c a -> (CMonad c) [(Bounded a a, Bounded a a)]
+collisions = undefined
 
 split :: (Spatial a) => RTreeConfig -> VBounded a b -> (VBounded a b, VBounded a b)
 split cfg v = 
