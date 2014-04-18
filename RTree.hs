@@ -207,12 +207,11 @@ split cfg v =
 
 data RInsert c a h = RInsert (Interval a) | RSplit (Interval a, RNode c a h) (Interval a, RNode c a h)
 
-insertNode :: (m ~ CMonad c, m ~ SMonad a, Container c, Spatial a) => RTreeConfig -> RNode c a h -> a -> m (RInsert c a h)
-insertNode cfg node x = case node of
+insertNode :: (m ~ CMonad c, m ~ SMonad a, Container c, Spatial a) => RTreeConfig -> RNode c a h -> Bounded a a -> m (RInsert c a h)
+insertNode cfg node (b,x) = case node of
 
   RLeaf tChilds -> do
     childs <- readC tChilds
-    b <- bounds x
     let newChilds = V.cons (b, x) childs
     if V.length newChilds <= maxElems cfg
     then do
@@ -227,11 +226,10 @@ insertNode cfg node x = case node of
 
   RInternal tChilds -> do
     childs <- readC tChilds
-    b <- bounds x
     let predictSizeDelta i = size (cover i b) - size i
     let bestChildIndex = V.minIndex . fmap (predictSizeDelta . fst) $ childs
     (_,bestChild) <- V.indexM childs bestChildIndex
-    insertResult <- insertNode cfg bestChild x
+    insertResult <- insertNode cfg bestChild (b,x)
     case insertResult of
       RInsert i ->
         let newChilds = childs V.// [(bestChildIndex, (i, bestChild))]
@@ -254,10 +252,11 @@ insertNode cfg node x = case node of
           
 insert :: (CMonad c ~ m, SMonad a ~ m, Container c, Spatial a) => RTree c a -> a -> m ()
 insert tree x = do
+    b <- bounds x
     (_,anyNode) <- readC (root tree)
     case anyNode of
       AnyNode rootNode -> do
-        insertResult <- insertNode (config tree) rootNode x
+        insertResult <- insertNode (config tree) rootNode (b,x)
         case insertResult of
           RInsert i -> writeC (root tree) (i, AnyNode rootNode)
           RSplit (i1,n1) (i2,n2) ->
@@ -266,4 +265,24 @@ insert tree x = do
             in do
               newRootNode <- RInternal <$> newC childs
               writeC (root tree) (newRootInterval, AnyNode newRootNode)
+
+data RDelete c a h = RNotFound | RDelete (Interval a) | RLeafUnderflow (VBounded a a) | RInternalUnderflow (VBounded a (RNode c a h))
+
+deleteNode :: (CMonad c ~ m, SMonad a ~ m, Container c, Spatial a, Eq a) => RTreeConfig -> RNode c a h -> Bounded a a -> m (RDelete c a h)
+deleteNode config node (b,x) = case node of
+  
+  RLeaf cLeaves -> do
+    leaves <- readC cLeaves
+    if V.elem x $ fmap snd leaves 
+    then 
+      let newLeaves = V.filter (not . (x==) . snd) leaves
+      in if V.length newLeaves >= minElems config
+      then do
+        writeC cLeaves newLeaves
+        return . RDelete $ nodeRegion newLeaves
+      else error "Todo underflow"
+    else return RNotFound
+
+  RInternal cChilds -> error "ToDo delete internal node"
+
 
