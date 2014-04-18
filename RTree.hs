@@ -1,7 +1,7 @@
 
 {-# OPTIONS -W #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies, DataKinds, GADTs, RankNTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -10,6 +10,7 @@ module RTree (Container(..), Spatial(..), RTreeConfig, defaultConfig, RTree, emp
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity
 import qualified Data.List as L
+import Data.Type.Natural
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Prelude hiding (Bounded)
@@ -38,18 +39,20 @@ data RTreeConfig = RTreeConfig
 defaultConfig :: RTreeConfig
 defaultConfig = RTreeConfig 6 2
 
-data RTree c a = RTree
-  { config :: RTreeConfig
-  , root :: c (Interval a, RNode c a)
-  }
-
 type Bounded a b = (Interval a, b)
 type VBounded a b = Vector (Bounded a b)
 type CVBounded c a b = c (VBounded a b)
 
-data RNode c a 
-  = RInternal (CVBounded c a (RNode c a))
-  | RLeaf (CVBounded c a a)
+data RNode :: (* -> *) -> * -> Nat -> * where
+  RInternal :: (CVBounded c a (RNode c a n)) -> RNode c a (S n)
+  RLeaf :: (CVBounded c a a) -> RNode c a Z
+
+data AnyNode c a = forall h. AnyNode (RNode c a h)
+
+data RTree c a = RTree
+  { config :: RTreeConfig
+  , root :: c (Interval a, AnyNode c a)
+  }
 
 {-
 -- Collapse from the bottom
@@ -65,7 +68,7 @@ foldNode foldInternal foldLeaf initial node = case node of
     -}
 
 -- DFS Walk 
-walkNode :: (Container c) => (b -> Bounded a a -> (CMonad c) b) -> b -> RNode c a -> (CMonad c) b
+walkNode :: (Container c) => (b -> Bounded a a -> (CMonad c) b) -> b -> RNode c a h -> (CMonad c) b
 walkNode walkLeaf initial node = case node of
   RInternal cChilds -> do
     childs <- readC cChilds
@@ -75,13 +78,15 @@ walkNode walkLeaf initial node = case node of
     V.foldM walkLeaf initial leaves
 
 leafList :: (Container c) => RTree c a -> (CMonad c) [Bounded a a]
-leafList tree = snd <$> readC (root tree) >>= walkNode accum []
+leafList tree = do
+  (AnyNode node) <- snd <$> readC (root tree)
+  walkNode accum [] node
   where
     accum acc (i,a) = return $ (i,a) : acc
 
 readTree :: (Container c) => RTree c a -> (CMonad c) (RTree Identity a)
 readTree tree = 
-  let readNode :: (Container c) => RNode c a -> (CMonad c) (RNode Identity a)
+  let readNode :: (Container c) => RNode c a h -> (CMonad c) (RNode Identity a h)
       readNode node = case node of
         RLeaf cLeaves -> do
           childs <- readC cLeaves
@@ -90,9 +95,9 @@ readTree tree =
           leaves <- readC cChilds
           RInternal . Identity <$> V.mapM (\(i,n) -> (i,) <$> readNode n) leaves
   in do
-    (i,rootNode) <- readC (root tree)
+    (i,(AnyNode rootNode)) <- readC (root tree)
     rootNode' <- readNode rootNode
-    return $ RTree (config tree) (Identity (i,rootNode'))
+    return $ RTree (config tree) (Identity (i, AnyNode rootNode'))
 
 printTree :: (Show a, Show (Interval a)) => RTree Identity a -> IO ()
 printTree tree = 
@@ -100,7 +105,7 @@ printTree tree =
   let padStep :: String
       padStep = "->"
 
-      printNode :: (Show a, Show (Interval a)) => String -> (Interval a, RNode Identity a) -> IO ()
+      printNode :: (Show a, Show (Interval a)) => String -> (Interval a, RNode Identity a h) -> IO ()
       printNode pad (region,node) = case node of
 
         RLeaf (Identity childs) -> do
@@ -113,19 +118,19 @@ printTree tree =
 
   in do
     putStrLn "Root"
-    printNode padStep $ runIdentity (root tree)
+    case runIdentity $ root tree of
+      (region, AnyNode node) -> do
+        printNode "" (region, node)
 
 empty :: (Container c, Spatial a) => RTreeConfig -> (CMonad c) (RTree c a)
 empty cfg = do
-  leaf <- RLeaf <$> newC V.empty
+  leaf <- AnyNode . RLeaf <$> newC V.empty
   RTree cfg <$> newC (emptyInterval, leaf)
-
-data RInsert c a = RInsert (Interval a) | RSplit (Interval a, RNode c a) (Interval a, RNode c a)
 
 nodeRegion :: Spatial a => VBounded a b -> Interval a
 nodeRegion v = V.foldr (cover . fst) emptyInterval v
 
-searchNode :: (Spatial a, Container c) => Interval a -> RNode c a -> (CMonad c) (VBounded a a)
+searchNode :: (Spatial a, Container c) => Interval a -> RNode c a h -> (CMonad c) (VBounded a a)
 searchNode query node = case node of
   RLeaf cLeaves -> do
     childs <- readC cLeaves
@@ -134,10 +139,14 @@ searchNode query node = case node of
     childs <- readC cChilds
     let matches = V.filter (intersect query . fst) childs
     results <- V.mapM (searchNode query . snd) matches
+    -- Didn't think too much about the complexity here, reconsider a fold and return a list
     return $ V.foldr (V.++) V.empty results
 
 search :: (Spatial a, Container c) => RTree c a -> Interval a -> (CMonad c) (VBounded a a)
-search tree q = (snd <$> readC (root tree)) >>= searchNode q
+search tree q = do
+  anyNode <- (snd <$> readC (root tree))
+  case anyNode of
+    AnyNode node -> searchNode q node
 
 collisions :: RTree c a -> (CMonad c) [(Bounded a a, Bounded a a)]
 collisions = undefined
@@ -168,7 +177,9 @@ split cfg v =
         in (V.cons vWorst1 vGroup1A, V.cons vWorst2 (vGroup1B V.++ vGroup2))
     else (V.cons vWorst1 vGroup1, V.cons vWorst2 vGroup2)
 
-insertNode :: (m ~ CMonad c, m ~ SMonad a, Container c, Spatial a) => RTreeConfig -> RNode c a -> a -> m (RInsert c a)
+data RInsert c a h = RInsert (Interval a) | RSplit (Interval a, RNode c a h) (Interval a, RNode c a h)
+
+insertNode :: (m ~ CMonad c, m ~ SMonad a, Container c, Spatial a) => RTreeConfig -> RNode c a h -> a -> m (RInsert c a h)
 insertNode cfg node x = case node of
 
   RLeaf tChilds -> do
@@ -215,14 +226,16 @@ insertNode cfg node x = case node of
           
 insert :: (CMonad c ~ m, SMonad a ~ m, Container c, Spatial a) => RTree c a -> a -> m ()
 insert tree x = do
-    (_,rootNode) <- readC (root tree)
-    insertResult <- insertNode (config tree) rootNode x
-    case insertResult of
-      RInsert i -> writeC (root tree) (i,rootNode)
-      RSplit (i1,n1) (i2,n2) ->
-        let childs = V.fromList [(i1,n1),(i2,n2)]
-            newRootInterval = cover i1 i2
-        in do
-          newRootNode <- RInternal <$> newC childs
-          writeC (root tree) (newRootInterval, newRootNode)
+    (_,anyNode) <- readC (root tree)
+    case anyNode of
+      AnyNode rootNode -> do
+        insertResult <- insertNode (config tree) rootNode x
+        case insertResult of
+          RInsert i -> writeC (root tree) (i, AnyNode rootNode)
+          RSplit (i1,n1) (i2,n2) ->
+            let childs = V.fromList [(i1,n1),(i2,n2)]
+                newRootInterval = cover i1 i2
+            in do
+              newRootNode <- RInternal <$> newC childs
+              writeC (root tree) (newRootInterval, AnyNode newRootNode)
 
